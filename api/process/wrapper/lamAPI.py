@@ -2,12 +2,13 @@ import os
 import aiohttp
 import asyncio
 import traceback
+from typing import List, Dict
 from wrapper.URLs import URLs
 from aiohttp_retry import RetryClient, ExponentialRetry
 
 
 headers = {
-    'accept': 'application/json'
+    'Content-Type': 'application/json'
 }
 
 LAMAPI_TOKEN = os.environ["LAMAPI_TOKEN"]
@@ -100,14 +101,26 @@ class LamAPI():
 
         return freq_data
 
-    async def column_analysis(self, columns):
-        json_data = {
-            'json': columns
-        }
+    async def column_analysis(self, columns: List[List[str]]) -> List[List[str]]:
+        # The input is a list of lists, where every list is a column in the table
+        json_data = {"json": [columns]}
         params = {
             'token': self.client_key
         }
-        return await self.__submit_post(self._url.column_analysis_url(), params, json_data)
+        # The resutls are a list of dictionaries, where:
+        # Every dictionary has a key in the form `table_idx`, where `idx` ranges in the number of tables processed
+        # For every `table_idx`, the value is a dictionary with the following keys:
+        # - `column_idx`: The index of the column in the table, with the following keys:
+        #   - `index_column`: The datatype of the column
+        #   - `tag`: The tag assigned to the column (LIT/NE)
+        #   - `datatype`: The datatype of the column
+        #   - `classification`: The classification of the column
+        #   - `probabilities`: a dictionary containing the probabilities of every datatype returned
+        response: List[Dict[str, Dict[str, Dict[str, str]]]] = await self.__submit_post(
+            self._url.column_analysis_url(), params, json_data
+        )
+        assert len(response) == 1, "The response should contain only one table"
+        return response[0]["table_1"]
 
     async def labels(self, entities):
         params = {
@@ -158,27 +171,105 @@ class LamAPI():
             'json': entities
         }
         return await self.__submit_post(self._url.entities_literals_url(), params, json_data)
+    
+    def _make_query(self,name, types):
+        query = {
+            "query": {
+                "bool": {
+                "must": [
+                    {
+                    "match": {
+                        "name": {
+                        "query": f"\"{name}\"",
+                        "boost": 2.0
+                        }
+                    }
+                    },
+                    {
+                    "bool": {
+                        "should": [],
+                        "minimum_should_match": 1
+                        }
+                        }
+                    ]
+                    }
+                }
+            }
+        for t in types:
+            if t != "":
+                t = f'"*{t}*"'
+                query['query']['bool']['must'][1]['bool']['should'].append({"constant_score": {"filter": {"query_string": {"default_field": "types","query": t}}}})
+        
+        return str(query)
 
-    async def lookup(self, string, ngrams=False, fuzzy=False, types=None, limit=100, ids=None):
+    async def lookup(self, string, ngrams=False, fuzzy=False, types=None, NERTypes=None, limit=100, ids=None, t_closure=None):
         # Convert boolean values to strings
         ngrams_str = 'true' if ngrams else 'false'
         fuzzy_str = 'true' if fuzzy else 'false'
-        types_str = ' '.join(types) if types is not None else None
-        ids_str = ' '.join(ids) if ids else ''  # Provide default value if ids is None
         
+        
+        if isinstance(ids, list):
+            ids_str = " ".join(ids)
+        elif ids is None:
+            ids_str = ""
+        elif isinstance(ids, str):
+            ids_str = ids
+        else:
+            raise ValueError("ids must be a list, a string, or None")        
         params = {
             'token': LAMAPI_TOKEN,
             'name': string,
             'ngrams': ngrams_str,
             'fuzzy': fuzzy_str,
             'kg': self.kg,
-            'limit': limit
+            'limit': limit,
+            'cache': 'false'
         }
-        if types_str is not None:
-            params['types'] = types_str
+        
+        if ids_str != "":
+            params['ids'] = ids_str
+        else:
+            params['ids'] = ""
+        
+        if types is not None and types != " ":
+            if t_closure:
+                tp = list(types.split(" "))
+                query = self._make_query(params["name"], tp)
+                params['query'] = query
+            else:
+                params['types'] = types
+        else:
+            params['types'] = ""
+        
+        if NERTypes is not None and NERTypes is not " ":
+            if ids_str != "":
+                r=await self.__submit_get(self._url.lookup_url(), params)
+                ids_index = next((index for (index, d) in enumerate(r) if d["id"] == ids_str), None)
+                params["NERtype"] = r[ids_index]["NERtype"]
+                result = await self.__submit_get(self._url.lookup_url(), params)
+                if len(result) >= 1 and "wikidata" not in result and "error" not in result:    
+                    result = {"wikidata": result}
+                return result
+            else:
+                NERTypes = NERTypes.split(" ")
+                result = []
+                NERTypes = list(set(NERTypes))
+                if len(NERTypes) is 1:
+                    params["NERType"] = NERTypes[0]
+                else:
+                    query = '{"query": {"bool": {"must": [{"match": {"name": {"query": "' + params['name']+ '","boost": 2.0}}},{"terms": {"NERtype": ['
+                    for NERType in NERTypes:
+                        query += '"'+ NERType + '"'
+                        if NERType != NERTypes[len(NERTypes)-1]:
+                            query += ","
+                    query += '], "boost":2.0}}]}}}'
+                    params['query'] = query
+        else:
+            params['NERtype'] = ""
             
+        
         result = await self.__submit_get(self._url.lookup_url(), params)
-        if len(result) > 1:
+        if len(result) >= 1 and "wikidata" not in result and "error" not in result:
             result = {"wikidata": result}
 
         return result

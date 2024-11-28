@@ -7,8 +7,8 @@ class Row:
         self.cells = []
         self._n_cols = n_cols
 
-    def add_ne_cell(self, content: str, row_content: str, candidates: list, id_col: int, is_subject=False):
-        cell = Cell(content, row_content, candidates, id_col, self._n_cols)
+    def add_ne_cell(self, content: str, row_content: str, candidates: list, id_col: int, is_subject=False, qid=None):
+        cell = Cell(content, row_content, candidates, id_col, self._n_cols, qid=qid)
         self.cells.append(cell)
 
         if is_subject:

@@ -2,13 +2,17 @@
 import os  # For interacting with the operating system
 import math  # For mathematical operations
 import traceback  # To provide details of exceptions
+import pandas as pd  # Popular data manipulation package
 import redis  # Redis database interface
 from flask import Flask, request, jsonify  # Flask web framework components
 from flask_cors import CORS  # To handle Cross-Origin Resource Sharing (CORS)
 from flask_restx import Api, Resource, fields, reqparse  # Extensions for Flask to ease REST API development
 from werkzeug.datastructures import FileStorage  # To handle file storage in Flask
+
+
+import tensorflow as tf
 import logging
-import pymongo  # MongoDB interface
+
 # Disable TensorFlow warnings
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # This hides info and warning messages
 
@@ -21,6 +25,7 @@ logging.getLogger('tensorflow').setLevel(logging.ERROR)
 from process.wrapper.Database import MongoDBWrapper  # MongoDB database wrapper
 from utils.Dataset import DatasetModel  # Dataset utility model
 from utils.Table import TableModel  # Table utility model
+import pymongo  # MongoDB database interface
 
 
 # Retrieve environment variables for Redis configuration and API token
@@ -60,6 +65,7 @@ ds = api.namespace("dataset", description="Dataset namespace")
 upload_parser = api.parser()
 upload_parser.add_argument("file", location="files",
                            type=FileStorage, required=True)
+upload_parser.add_argument("columnTypes", type=str, help="Types of columns", location='args')
 
 # Define a function to validate the provided token against the expected API token
 def validate_token(token):
@@ -206,7 +212,8 @@ class CreateWithArray(Resource):
             out = [{"id": str(table["_id"]), "datasetName": table["datasetName"], "tableName": table["tableName"]} for table in tables]
         except Exception as e:
             print({"traceback": traceback.format_exc()}, flush=True)
-            
+            #return {"status": "Error", "message": str(e)}, 400
+
         return {"status": "Ok", "tables": out}, 202
    
 
@@ -256,10 +263,10 @@ class Dataset(Resource):
         args = parser.parse_args()
         token = args["token"]
         page = args["page"]
-
+        
         if page is None:
-            page = 1
-
+            page = 1      
+            
         if not validate_token(token):
             return {"Error": "Invalid Token"}, 403
         
@@ -285,7 +292,7 @@ class Dataset(Resource):
                 }
                 for result in results
             ]
-
+            
             # Return both data and pagination info
             return {
                 "data": out,
@@ -417,11 +424,11 @@ class DatasetID(Resource):
             return {"Error": "Invalid Token"}, 403
         try:
             self._delete_dataset(dataset_name)
-            return {"datasetName": datasetName, "deleted": True}, 200     
+            return {"datasetName": datasetName, "deleted": True}, 200 
         except Exception as e:
             print({"traceback": traceback.format_exc()}, flush=True)
             return {"status": "Error", "message": str(e)}, 400
-              
+                  
 
     def _delete_dataset(self, dataset_name):
         query = {"datasetName": dataset_name}
@@ -452,7 +459,12 @@ class DatasetTable(Resource):
     @ds.expect(upload_parser)
     @ds.doc(
         params={ 
-            "kgReference": {"description": "Source Knowledge Graph (KG) of reference for the annotation process. Default is 'wikidata'.", "type": "string"}
+            "kgReference": {"description": "Source Knowledge Graph (KG) of reference for the annotation process. Default is 'wikidata'.", "type": "string"},
+            "columnTypes": {"description": "Types to be assigned to each column", "type":"string"},
+            "columnNERTypes" : {"description" : "NERTypes to be assigned to each column. Available values: 'ORG', 'PERS', 'LOC' and 'OTHERS'.", "type":"string" },
+            "columnNorL" : {"description": "Datatypes to be assigned at each column. Available values: 'LIT' or 'NE'.", "type":"string"},
+            "litTypes": {"description": "Datatypes for each literal column of the table", "type":"string"},
+            "t_closure": {"description": "If types are inserted, insert True if you want to use the transitive closure of the type, rather than the type. If you want to use this insert one type per column. Available values:'True' or 'False'", "type":"string"}
         }
     )
     def post(self, datasetName):
@@ -462,12 +474,22 @@ class DatasetTable(Resource):
                 datasetName (str): The name of the dataset to which the table will be added.
                 kgReference (str): Optional. The reference Knowledge Graph for annotation (e.g., 'wikidata').
                 token (str): API token for authentication.
+                columnTypes (str): Types for each column of the table.
+                columnNERTypes (str) : NERTypes for each column of the table.
+                columnNorL (str): Datatypes for each column of the table.
+                litTypes (str): Datatypes for each literal column of the table.
+                t_closure (str): If types are inserted, insert True if you want to use the transitive closure of the type, rather than the type. Insert one type per column.
             Returns:
                 Dict: A status message and a list of processed tables, or an error message in case of failure.
         """
         parser = reqparse.RequestParser()
         parser.add_argument("kgReference", type=str, help="variable 1", location="args")
         parser.add_argument("token", type=str, help="variable 2", location="args")
+        parser.add_argument("columnTypes", type=str, help="variable 3", location="args")
+        parser.add_argument("columnNorL", type=str, help="variable 4", location="args")
+        parser.add_argument("litTypes", type=str, help="variable 5", location="args")
+        parser.add_argument("columnNERTypes", type=str, help="variable 6", location="args")
+        parser.add_argument("t_closure", type=str, help="variable 7", location="args")
         args = parser.parse_args()
         kg_reference = "wikidata"
         if args["kgReference"] is not None:
@@ -475,6 +497,21 @@ class DatasetTable(Resource):
         token = args["token"]
         if not validate_token(token):
             return {"Error": "Invalid Token"}, 403
+        types = None
+        if args["columnTypes"] is not None:
+            types = list(args["columnTypes"].split(","))
+        NorL_Types = None
+        if args["columnNorL"] is not None:
+            NorL_Types = list(args["columnNorL"].split(","))
+        l_types = None
+        if args["litTypes"] is not None:
+            l_types = list(args["litTypes"].split(","))
+        NERTypes = None
+        if args["columnNERTypes"] is not None:
+            NERTypes = list(args["columnNERTypes"].split(","))
+        t_closure = None
+        if args["t_closure"] is not None:
+            t_closure = list(args["t_closure"].split(","))
         
         try:
             args = upload_parser.parse_args()
@@ -483,22 +520,22 @@ class DatasetTable(Resource):
             table_name = uploaded_file.filename.split(".")[0]
             out = [{"datasetName": datasetName, "tableName": table_name}]
             table = TableModel(mongoDBWrapper)
-            num_rows = table.parse_csv(uploaded_file, dataset_name, table_name, kg_reference)
+            num_rows = table.parse_csv(uploaded_file, dataset_name, table_name, kg_reference, types, NERTypes, NorL_Types,l_types,t_closure)
             table.store_tables(num_rows)
             dataset = DatasetModel(mongoDBWrapper, table.table_metadata)
             dataset.store_datasets()
             tables = table.get_data()
-            row_c.insert_many(tables)    
+            row_c.insert_many(tables)
             job_active.delete("STOP")
             out = [{"id": str(table["_id"]),  "datasetName": table["datasetName"], "tableName": table["tableName"]} for table in tables]
-            return {"status": "Ok", "tables": out}, 202
         except pymongo.errors.DuplicateKeyError as e:
             pass
             #print({"traceback": traceback.format_exc()}, flush=True)       
         except Exception as e:
             return {"status": "Error", "message": str(e), "traceback": traceback.format_exc()}, 400
         
-        
+        return {"status": "Ok", "tables": out}, 202
+    
     @ds.doc(
         params={
             "page": {
@@ -525,10 +562,11 @@ class DatasetTable(Resource):
         args = parser.parse_args()
         page = args["page"]
         token = args["token"]
-        
+
         if not validate_token(token):
             return {"Error": "Invalid Token"}, 403
         
+
         try:
             page = int(page)
             max_pages_result = list(table_c.aggregate([
@@ -549,7 +587,7 @@ class DatasetTable(Resource):
                     "nrows": result["Nrows"],
                     "status": result["status"]
                 })
-
+                
             return {
                 "data": out,
                 "pagination": {
@@ -561,7 +599,7 @@ class DatasetTable(Resource):
             print({"traceback": traceback.format_exc()}, flush=True)
             return {"status": "Error", "message": str(e)}, 400        
 
-       
+
 @ds.route("/<datasetName>/table/<tableName>")
 @ds.doc(
     description="Endpoint for retrieving and deleting specific tables within a dataset.",
@@ -647,10 +685,10 @@ class TableID(Resource):
         total_pages = 0
         if max_pages_result:
             total_pages = max_pages_result[0]["max"]
-      
+            
         if page is not None:
             query["page"] = page
-
+            
         results = row_c.find(query)
         out = [
             {
@@ -666,7 +704,7 @@ class TableID(Resource):
         ]
 
         if len(out) == 0:
-            return [], total_pages   
+            return [], total_pages
         
         buffer = out[0]
         for o in out[1:]:
@@ -687,7 +725,8 @@ class TableID(Resource):
                 winning_candidates = result["winningCandidates"]
                 for id_col, candidates in enumerate(winning_candidates):
                     entities = []
-                    for candidate in candidates[0:3]:
+                    
+                    for candidate in candidates:
                         entities.append({
                             "id": candidate["id"],
                             "name": candidate["name"],
@@ -756,6 +795,7 @@ class TableID(Resource):
             print({"traceback": traceback.format_exc()}, flush=True)
             return {"status": "Error", "message": str(e)}, 400
 
+       
     
     def _delete_table(self, dataset_name, table_name):
         query = {"datasetName": dataset_name, "tableName": table_name}

@@ -41,7 +41,21 @@ class Decision:
             for cell in row.get_cells():
                 candidates = cell.candidates()
                 wc = []
-                rank = candidates[0:20] if len(candidates) > 0 else []
+                rank = candidates
+                if cell.qid is not None and cell.qid != "":
+                    correct_cand_in = False
+                    for candidate in rank:
+                        if candidate["id"] == cell.qid:
+                            correct_cand_in = True
+                            break
+                    if not correct_cand_in:
+                        correct_cand_idx = -1
+                        for i, candidate in enumerate(candidates):
+                            if candidate["id"] == cell.qid:
+                                correct_cand_idx = i
+                                break
+                        if correct_cand_idx != -1:
+                            rank.append(candidates[correct_cand_idx])
                 if len(candidates) > 0:
                     if len(candidates) > 1:
                         candidates[0]["delta"] = round(candidates[0]["rho'"] - candidates[1]["rho'"], 3)
@@ -53,10 +67,8 @@ class Decision:
                 if len(wc) == 1:
                     cea[str(cell._id_col)] = wc[0]["id"]
                     if wc[0]["score"] > SIGMA:
-                        wc[0]["match"] = True
-                        wc.extend(candidates[1:3])
-                    else:    
-                        wc.extend(candidates[1:5])
+                        wc[0]["match"] = True 
+                    wc.extend(candidates)
 
                 winning_candidates.append(wc)
                 rankend_candidates.append(rank)

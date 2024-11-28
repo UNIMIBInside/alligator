@@ -25,7 +25,7 @@ class DataPreparation:
         return parsed_header
             
   
-    async def compute_datatype(self, current_column_metadata, current_target):
+    async def compute_datatype(self, current_column_metadata, current_target, NorL_types=None, l_types=None):
         column_metadata = {}
         print("column_metadata", self._column_to_datatype)
         target = {"SUBJ": None, "NE": [], "LIT": [], "NO_TAG": [], "LIT_DATATYPE": {}}
@@ -33,36 +33,50 @@ class DataPreparation:
         for row in self._rows:
             for id_col, cell in enumerate(row["data"]):
                 columns_data[id_col].append(str(cell))
-        
-        metadata = await self._lamAPI.column_analysis(columns_data)
-        first_NE_column = False  
-        for id_col in metadata:
-            lit_datatype = None
-            if id_col in current_column_metadata:
-                tag = current_column_metadata[id_col]
-                if tag == "LIT":
-                    lit_datatype = current_target["LIT_DATATYPE"][id_col]
-            elif id_col not in self._column_to_datatype:
-                tag = metadata[id_col]["tag"]
-                if tag == "LIT":
-                    lit_datatype = metadata[id_col]["datatype"]
-            else:
-                tag = self._column_to_datatype[id_col]['kind']
-                lit_datatype = self._column_to_datatype[id_col]['datatype']
+                
+        if NorL_types is not None:
+            for id_col, dt in enumerate(NorL_types):
+                column_metadata[str(id_col)] = dt
+            first_NE_column = False
+            id_lit = 0
+            for id_col, dt in enumerate(NorL_types):
+                target[dt].append(int(id_col))
+                if dt == "NE":
+                    if not first_NE_column:
+                        target["SUBJ"] = int(id_col)
+                    first_NE_column = True
+                elif dt == "LIT":
+                    target['LIT_DATATYPE'][str(id_col)] = l_types[id_lit]
+                    id_lit+=1
+        else:
+            metadata = await self._lamAPI.column_analysis(columns_data)
+            first_NE_column = False
+            for id_col in metadata:
+                lit_datatype = None
+                if id_col in current_column_metadata:
+                    tag = current_column_metadata[id_col]
+                    if tag == "LIT":
+                        lit_datatype = current_target["LIT_DATATYPE"][id_col]
+                elif id_col not in self._column_to_datatype:
+                    tag = metadata[id_col]["tag"]
+                    if tag == "LIT":
+                        lit_datatype = metadata[id_col]["datatype"]
+                else:
+                    tag = self._column_to_datatype[id_col]['kind']
+                    lit_datatype = self._column_to_datatype[id_col]['datatype']
+                
+                if tag == "SUBJ": # you just need it for degugging if you re-run stuff!
+                    tag = "NE"
+
+                column_metadata[id_col] = tag    
+                target[tag].append(int(id_col)) 
+                if tag == "NE":
+                    if not first_NE_column:
+                        target["SUBJ"] = int(id_col)
+                    first_NE_column = True
+                elif tag == "LIT":
+                    target['LIT_DATATYPE'][str(id_col)] = lit_datatype
             
-            if tag == "SUBJ": # you just need it for degugging if you re-run stuff!
-                tag = "NE"
-
-            column_metadata[id_col] = tag    
-            target[tag].append(int(id_col)) 
-            if tag == "NE":
-                if not first_NE_column:
-                    target["SUBJ"] = int(id_col)
-                first_NE_column = True
-            elif tag == "LIT":
-                target['LIT_DATATYPE'][str(id_col)] = lit_datatype
-        
-
         return column_metadata, target        
 
 

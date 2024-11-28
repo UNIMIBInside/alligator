@@ -1,15 +1,18 @@
+import traceback
 import utils.metrics as metrics
 import utils.utils as utils
+import json
 
 
 class Cell:
-    def __init__(self, content: str, row_content:str, candidates: list, id_col: int, n_cols: int, is_lit_cell=False, is_notag_cell=False, datatype=None):
+    def __init__(self, content: str, row_content:str, candidates: list, id_col: int, n_cols: int, is_lit_cell=False, is_notag_cell=False, datatype=None, qid: str = None): 
         self.content = content
         self._id_col = id_col
         self.is_lit_cell = is_lit_cell
         self.is_notag_cell = is_notag_cell
         self.datatype = datatype
         self._candidates = []
+        self.qid = qid
         candidates_dict = {}
         
         for candidate in candidates:
@@ -18,8 +21,7 @@ class Cell:
             desc_norm = utils.clean_str(candidate["description"])
             row_content_norm = utils.clean_str(row_content)
             desc_score = round(metrics.compute_similarity_between_string(desc_norm, row_content_norm), 3)
-            desc_score_ngram = round(metrics.compute_similarity_between_string(desc_norm, row_content_norm, 3), 3)
-           
+            desc_score_ngram = round(metrics.compute_similarity_between_string(desc_norm, row_content_norm, 3), 3)          
             features = {
                 "ambiguity_mention": candidate["ambiguity_mention"],
                 "ncorrects_tokens": candidate["corrects_tokens"],
@@ -51,14 +53,14 @@ class Cell:
                 "cpa_t3": 0,
                 "cpa_t4": 0,
                 "cpa_t5": 0
-            }
-
-           
+            }           
+            
+            
             replace = False
             if id_candidate in candidates_dict:
-                score = candidates_dict[id_candidate]["features"]["ed"] + candidates_dict[id_candidate]["features"]["jaccard"]
-                if (features["ed"] + features["jaccard"]) > score:
-                    replace = True
+                score = candidates_dict[id_candidate]["features"]["ed_score"] + candidates_dict[id_candidate]["features"]["jaccard_score"]
+                if (features["ed_score"] + features["jaccard_score"]) > score:
+                    replace = True            
             
             if id_candidate not in candidates_dict or replace:
                 candidates_dict[id_candidate] = { 

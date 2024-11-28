@@ -46,6 +46,8 @@ async def main():
     cpa_c = mongoDBWrapper.get_collection("cpa")
     cta_c = mongoDBWrapper.get_collection("cta")
     cea_prelinking_c = mongoDBWrapper.get_collection("ceaPrelinking")
+
+
    
     data = row_c.find_one_and_update({"status": "TODO"}, {"$set": {"status": "DOING"}})
 
@@ -65,13 +67,14 @@ async def main():
     page = data["page"]
     header = data["header"]
 
+    
     lamAPI = LamAPI(LAMAPI_HOST, LAMAPI_TOKEN, mongoDBWrapper, kg=kg_reference)
 
     obj_row_update = {"status": "DONE", "time": None}
     dp = DataPreparation(header, rows_data, lamAPI)
     
     try:
-        column_metadata, target = await dp.compute_datatype(column_metadata, target)
+        column_metadata, target = await dp.compute_datatype(column_metadata, target, data["NorL_types"], data["l_types"])
         if target["SUBJ"] is not None:
             column_metadata[str(target["SUBJ"])] = "SUBJ"
         obj_row_update["column"] = column_metadata

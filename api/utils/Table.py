@@ -1,7 +1,12 @@
+import json
+import traceback
+from urllib.error import HTTPError, URLError
 import pandas as pd
+import numpy as np
 import math
 import time
 import os
+from SPARQLWrapper import SPARQLWrapper
 
 class TableModel:
     
@@ -17,11 +22,47 @@ class TableModel:
         self.data = []
         self.table_metadata = {}
 
+        
+    def _get_t_closure(self, type):
+        retries = 3
+        for attempt in range(retries):
+            try:
+                sparql = SPARQLWrapper("https://query.wikidata.org/sparql")
+                sparql.setReturnFormat('json')
+                s = "SELECT DISTINCT ?item ?desc WHERE {?item wdt:P279|wdt:P279* wd:"+ type +".?item rdfs:label ?desc filter (lang(?desc) = 'en').}"
+                sparql.setQuery(s) # the previous query as a literal string
+                sparql.addCustomHttpHeader("User-Agent", "Alligator_t_cl/1.0")
+                query_SPRQL = sparql.query()
+                data = query_SPRQL._convertJSON()
+                w = ""
+                for x in data["results"]["bindings"]:
+                    if(x["item"]["value"] != ""):
+                        w += " " + x["item"]["value"].replace("http://www.wikidata.org/entity/","") + " "
+                return w
+            
+            except HTTPError as e:
+                if e.code == 429:
+                    print(f"Too Many Requests  {attempt + 1}/{retries}")
+                    time.sleep(2 ** attempt)
+                else:
+                    print(f"HTTP Error: {e}")
+                    break
+            except URLError as e:
+                print(f"Connection error: {e}. Retry {attempt + 1}/{retries}")
+                time.sleep(2 ** attempt)
+                
+            except Exception as e:
+                print(f"Generic error: {e}")
+                break
+        raise Exception(f"Query failed after {retries} attempts.")
+        
+
+
     def parse_json(self, json_data):
         # Ensure it's a list of tables
         if not isinstance(json_data, list):
             raise ValueError("The provided JSON data is not a list of tables.")
-
+            
         # Process data to split larger tables into chunks
         processed_data = []
         for entry in json_data:
@@ -29,6 +70,26 @@ class TableModel:
             rows = entry['rows']
             column_metadata = entry.get('metadata', {}).get('column', {})
             column_types = entry.get('semanticAnnotations', {}).get('cta', {})
+            NorL_types = entry.get('NorL_types',None)
+            l_types = entry.get('l_types',None)
+            NERTypes = entry.get('NERTypes',None)
+            types = entry.get('Ctypes',None)
+            trans_closure = entry.get('t_closure',None)
+            if trans_closure is not None:
+                j = 0
+                for i in trans_closure:
+                    if i is True:
+                        try:
+                            types[j] = self._get_t_closure(types[j])
+                            j+=1
+                        except:
+                            traceback.print_exc()
+                
+            entry["NorL_types"] = NorL_types
+            entry["l_types"] = l_types
+            entry["NERTypes"] = NERTypes
+            entry["Ctypes"] = types
+            entry["t_closure"] = trans_closure
             entry['column'] = {str(c['idColumn']):c['tag'] for c in column_metadata}
             entry['target'] = {"SUBJ": None, "NE": [], "LIT": [], "LIT_DATATYPE": {}}
             entry['types'] = {str(c['idColumn']):' '.join(sorted(c['types'], reverse=True)) for c in column_types}
@@ -68,12 +129,25 @@ class TableModel:
                 processed_data.append(entry)
 
         self.data.extend(processed_data)
-
-    def parse_csv(self, file_path, dataset_name, table_name, kg_reference):
+        
+            
+    def parse_csv(self, file_path, dataset_name, table_name, kg_reference, types=None, NERTypes=None, NorL_types=None, l_types=None, trans_closure=None):
         # Read the CSV file using pandas
         df = pd.read_csv(file_path)
         # Extract headers
         headers = df.columns.tolist()
+        df = df.replace([np.nan], "")
+        j = 0
+        if trans_closure is not None:
+                for i in trans_closure:
+                    if i is True:
+                        try:
+                            types[j] = self._get_t_closure(types[j])
+                            j+=1
+                        except:
+                            traceback.print_exc()
+                
+        
         
         # Build the initial table object
         table_obj = {
@@ -87,8 +161,16 @@ class TableModel:
             "status": "TODO",
             "state": "READY",
             "candidateSize": 100,
-            "page": 1
+            "page": 1,
+            "Ctypes": types,
+            "NERTypes" : NERTypes,
+            "NorL_types": NorL_types,
+            "l_types": l_types,
+            "t_closure":trans_closure
         }
+        
+    
+        
 
         self.fill_table_metadata(table_obj)    
         # Split DataFrame rows into chunks of CHUNK_SIZE and create new table entries for each chunk
